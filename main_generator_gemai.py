@@ -137,193 +137,27 @@ Output in this format:
   "corrected_code": "..."
 }}"""
 
-    def create_test_prompt(self, all_previous_plans: List[Dict], current_plan: Dict, 
-                           prev_code: str, current_code: str, imports: List[str]) -> str:
-        """
-        Create a prompt for generating pytest test code for the current step.
-        Combines all previous and current plans/code for context.
-        """
-        # Combine all plan steps for context
-        all_plans_text = "\n".join([
-            f"Step {p.get('step_number')}: {p.get('description')} - {p.get('code_purpose')}"
-            for p in all_previous_plans
-        ])
-        all_plans_text += f"\nCurrent Step {current_plan.get('step_number')}: {current_plan.get('description')} - {current_plan.get('code_purpose')}"
-
-        # Combine code
-        combined_code = prev_code + "\n\n" + current_code if prev_code else current_code
-
-        # Format imports
-        imports_text = "\n".join(imports) if imports else ""
-
-        return f"""You are a senior Python tester and debugger. Generate pytest test code to validate the following feature code.
-
-PLAN CONTEXT (ALL STEPS): what this codde is part of 
-{all_plans_text}
-
-CRITICAL INSTRUCTIONS:
-- DO NOT use importlib or module imports
-- Test the code INLINE (single script, not a module)
-- Mock all external dependencies based on context above
-- Focus on runtime validation: code executes without exceptions
-
-
-CODE TO TEST:
-{imports_text}
-
-{combined_code}
-
-YOUR TASK:
-1. Generate a complete pytest test that validates this code works correctly
-2. The test should check for:
-   - No runtime errors when code executes
-   - Basic functionality works (variables are assigned, no exceptions)
-   - Code doesn't have import errors or missing dependencies
-3. Use mock data or mock objects where necessary (e.g., mock file paths, mock web elements)
-4. Keep test simple and focused on runtime validation, not full integration testing
-
-IMPORTANT REQUIREMENTS:
-- Start your response with a list of required libraries in this format:
-  REQUIRED_LIBRARIES: pandas, selenium, openpyxl, pytest, pytest-mock
-- Then provide the complete pytest code
-- Use pytest fixtures and mocking to avoid actual file/web operations
-- The test should be runnable with: pytest <filename>
-- Include try-except in test to catch any runtime errors
-
-OUTPUT FORMAT:
-Line 1: REQUIRED_LIBRARIES: pytest, pytest-mock, [any other libraries needed]
-Line 2+: Complete pytest code that copies the above code inline and tests it
-
-Generate the test code now."""
-
-    def dryrun_test(self, all_previous_plans: List[Dict], current_plan: Dict,
-                    prev_code: str, current_code: str, imports: List[str]) -> Tuple[bool, str]:
-        """
-        Generate and execute a pytest test for the combined code.
-        Returns (success, error_message)
-        """
-        print(f" Running dry-run test for step {current_plan.get('step_number')}...")
-
-        # Generate test code using LLM
-        test_prompt = self.create_test_prompt(all_previous_plans, current_plan, 
-                                              prev_code, current_code, imports)
-        test_response = self.get_llm_response(test_prompt)
-
-        if not test_response:
-            return False, "Failed to generate test code from LLM"
-
-        # Extract required libraries
-        required_libs = []
-        if "REQUIRED_LIBRARIES:" in test_response:
-            lib_line = test_response.split("REQUIRED_LIBRARIES:")[1].split("\n")[0]
-            required_libs = [lib.strip() for lib in lib_line.split(",")]
-
-        # Extract test code
-        test_code = test_response.strip()
-        if "```python" in test_code:
-            test_code = test_code.split("```python")[1].split("```")[0]
-        elif "```" in test_code:
-            test_code = test_code.split("```")[1].split("```")[0]
-        test_code = test_code.strip()
-
-        lines = test_code.split("\n")
-        cleaned_lines = []
-        for line in lines:
-        # Skip lines that start with REQUIRED_LIBRARIES: (not in comment/docstring)
-            if line.strip().startswith("REQUIRED_LIBRARIES:") and not line.strip().startswith(("#", '"""', "'''")):
-                continue  # Skip this line
-            cleaned_lines.append(line)
-        test_code = "\n".join(cleaned_lines)
-
-
-        tests_dir = "tests"
-        if not os.path.exists(tests_dir):
-            os.makedirs(tests_dir)
-            print(f"  Created '{tests_dir}' directory")
     
-        # Create descriptive filename
-        step_num = current_plan.get('step_number', 'unknown')
-        step_desc = current_plan.get('description', 'test')
-        # Clean description for filename (remove special chars)
-        clean_desc = "".join(c if c.isalnum() or c in (' ', '_') else '_' for c in step_desc)
-        clean_desc = clean_desc.replace(' ', '_').lower()[:50]  # Limit length
-    
-        test_filename = f"test_step_{step_num}_{clean_desc}.py"
-        test_filepath = os.path.join(tests_dir, test_filename)
-    
-        # Create header with context
-        test_file_content = f'''"""
-Test for Step {step_num}: {current_plan.get('description', 'N/A')}
-Purpose: {current_plan.get('code_purpose', 'N/A')}
-Generated: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-Required Libraries: {", ".join(required_libs)}
-"""
-
-{test_code}
-'''
-    
-        # Save to file
-        with open(test_filepath, 'w', encoding='utf-8') as f:
-            f.write(test_file_content)
-    
-        print(f"  Test saved: {test_filepath}")
-
-        # Install required libraries
-        print(f"   Installing test dependencies: {', '.join(required_libs)}")
-        for lib in required_libs:
-            try:
-                subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "-q", lib],
-                    capture_output=True,
-                    timeout=30
-                )
-            except Exception as e:
-                print(f"   Warning: Failed to install {lib}: {e}")
-
-        # Write test code to temporary file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='_test.py', delete=False) as f:
-            f.write(test_code)
-            test_file = f.name
-
-        try:
-            # Run pytest on the test file
-            result = subprocess.run(
-                [sys.executable, "-m", "pytest", test_file, "-v", "--tb=short"],
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
-
-            # Check if test passed
-            if result.returncode == 0:
-                print(f"   Dry-run test PASSED")
-                return True, ""
-            else:
-                error_msg = result.stdout + "\n" + result.stderr
-                print(f"   Dry-run test FAILED")
-                return False, f"Pytest failed:\n{error_msg}"
-
-        except subprocess.TimeoutExpired:
-            return False, "Test execution timeout (15 seconds)"
-        except Exception as e:
-            return False, f"Test execution error: {str(e)}"
-        finally:
-            # Clean up test file
-            try:
-                os.unlink(test_file)
-            except:
-                pass
 
     def get_llm_response(self, prompt: str) -> str:
         """Get response from Google API with detailed logging."""
         print(f"  Calling API with model: {self.model}")
         print(f"  Prompt length: {len(prompt)} characters")
+
+        #counting tokens before sending to track usage
+        token_count = self.client.count_tokens(prompt)
+        print(f"Input tokens: {token_count.total_tokens}")  #estimated tokens in prompt before making api call
     
         try:
             response = self.client.generate_content(prompt)
             content = response.text
-            print(f"   API call successful, response length: {len(content) if content else 0}")
+            #get token usage from response
+            print(f"Token Usage:")
+            print(f"-- Prompt tokens: {response.usage_metadata.prompt_token_count}") #actual tokens sent as prompt to model
+            print(f" -- Completion Tokens: {response.usage_metadata.candidates_token_count}") #tokens in model's generated output
+            print(f" -- Total Tokens: {response.usage_metadata.total_token_count}")  # sum of prompt tokens and output tokens
+            print(f"   API call successful, response length: {len(content) if content else 0}") # gives length of characters in content
             return content
         
         except Exception as e:
@@ -391,7 +225,7 @@ Required Libraries: {", ".join(required_libs)}
                 [sys.executable, '-m', 'py_compile', temp_file],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=25
             )
 
             if result.returncode == 0:
@@ -412,7 +246,7 @@ Required Libraries: {", ".join(required_libs)}
     def execute_plan_step(self, plan_step: Dict, imports: List[str],
                           previous_code: str = "", all_previous_plans: List[Dict] = None) -> Tuple[bool, str, str]:
         """
-        Execute a single plan step with validation and dry-run testing.
+        Execute a single plan step with validation.
         Returns (success, generated_code, error_message)
         """
         if all_previous_plans is None:
@@ -464,23 +298,19 @@ Required Libraries: {", ".join(required_libs)}
                 # Fix Pattern 1: "selenium.webdriver.support import expected_conditions as EC"
                 # → "from selenium.webdriver.support import expected_conditions as EC"
                 if " import " in stripped:
-                    fixed_lines.append("from " + stripped)
-                    print(f" Fixed import: {stripped} → from {stripped}")
+                    fixed_lines.append("from " + stripped)                   
     
                 # Fix Pattern 2: "pandas as pd" → "import pandas as pd"
                 elif " as " in stripped:
-                    fixed_lines.append("import " + stripped)
-                    print(f" Fixed import: {stripped} → import {stripped}")
+                    fixed_lines.append("import " + stripped)                   
     
                 # Fix Pattern 3: "selenium.webdriver.chrome.options" → "import selenium.webdriver.chrome.options"
                 elif "." in stripped:
-                    fixed_lines.append("import " + stripped)
-                    print(f" Fixed import: {stripped} → import {stripped}")
+                    fixed_lines.append("import " + stripped)                   
     
                 # Fix Pattern 4: Just "os" or "openpyxl" → "import os"
                 elif stripped.replace("_", "").replace("-", "").isalnum():
                     fixed_lines.append("import " + stripped)
-                    print(f" Fixed import: {stripped} → import {stripped}")
     
                 else:
                 # Keep line unchanged if it doesn't match any pattern
@@ -489,72 +319,33 @@ Required Libraries: {", ".join(required_libs)}
             code = "\n".join(fixed_lines)
             
 
-            # Step 1: Validate syntax
+            # Validate syntax
             is_valid, error_msg = self.validate_code(code, imports)
 
-            if not is_valid:
-                retries += 1
-                print(f"  Validation failed (attempt {retries}): {error_msg}")
-                if retries < self.max_retries:
-                    fix_prompt = self.create_error_fixing_prompt(current_step, code, error_msg)
-                    fix_response = self.get_llm_response(fix_prompt)
-                    if fix_response:
-                        try:
-                            fix_data = json.loads(fix_response)
-                            current_step = fix_data.get("revised_plan", current_step)
-                        except:
-                            pass
-                continue
-
-            # Step 2: Dry-run test (after successful validation)
-            print(f"   Syntax validation passed")
-            test_passed, test_error = self.dryrun_test(
-                all_previous_plans, 
-                current_step, 
-                previous_code, 
-                code, 
-                imports
-            )
-
-            if test_passed:
-                # Test passed, forward code to next step
+            if is_valid:
                 return True, code, ""
-            else:
-                # Test failed, retry with error feedback
-                retries += 1
-                print(f"  Dry-run test failed (attempt {retries})")
-                if retries < self.max_retries:
-                    # Go back to code generation with test error context
-                    test_fix_prompt = self.create_error_fixing_prompt(
-                        current_step, 
-                        code, 
-                        f"Dry-run test failed:\n{test_error}"
-                    )
-                    test_fix_response = self.get_llm_response(test_fix_prompt)
-
-                    if test_fix_response:
-                        try:
-                            # Try to parse as JSON with revised_plan and corrected_code
-                            fix_test_data = json.loads(test_fix_response)
-                            current_step = fix_test_data.get("revised plan", current_step)
-                            if "corrected_code" in fix_test_data:
-                                code = fix_test_data ["corrected_code"]
-                        except Exception:
-                            # Not json treat as raw code
-                            code = test_fix_response.strip()
-                            if code.startswith("```"):
-                                code = code[9:]
-                            if code.startswith("```"):
-                                code = code[3:]
-                            if code.endswith("```"):
-                                code = code[:-3]
-                            code = code.strip()
-                            # Loop back to start of while with the FIXED code
-                    continue
-                else:
-                    return False, code, f"Failed after {self.max_retries} attempts. Last error: {test_error}"
-
-        return False, code, f"Failed after {self.max_retries} attempts"
+            
+            # If validation failed, try to fix
+            retries += 1
+            print(f"Attempt {retries} failed. Error: {error_msg}")
+            
+            if retries < self.max_retries:
+                # Get fix from planner
+                fix_prompt = self.create_error_fixing_prompt(current_step, code, error_msg)
+                fix_response = self.get_llm_response(fix_prompt)
+                
+                if fix_response:
+                    try:
+                        # Parse the fix response
+                        fix_data = json.loads(fix_response)
+                        current_step = fix_data.get("revised_plan", current_step)
+                        # The next iteration will use the revised plan
+                    except:
+                        # If parsing fails, continue with original plan
+                        pass
+        
+        return False, code, f"Failed after {self.max_retries} attempts. Last error: {error_msg}"
+                
 
     def generate_code(self, user_requirement: str) -> Dict:
         """
@@ -625,8 +416,15 @@ Required Libraries: {", ".join(required_libs)}
             if success:
                 full_code.append(code)
                 all_previous_plans.append(step)
-                print(f"  ✓ Step {i+1} completed and tested successfully")
+                print(f" Step {i+1} completed.")
             else:
+                print(f"\n❌ Step {i+1} FAILED")
+                print("="*70)
+                print("Failed Code:")
+                print("-"*70)
+                print(code)
+                print("-"*70) 
+                print(f"Error: {error}\n")
                 return {
                     "success": False,
                     "code": "\n".join(imports) + "\n\n" + "\n".join(full_code),
@@ -642,7 +440,7 @@ Required Libraries: {", ".join(required_libs)}
         is_valid, error_msg = self.validate_code("\n\n".join(full_code), imports)
 
         if is_valid:
-            print("✓ Code generation completed successfully!")
+            print("Code generation completed successfully!")
             return {
                 "success": True,
                 "code": final_code,
@@ -654,7 +452,8 @@ Required Libraries: {", ".join(required_libs)}
                 "success": False,
                 "code": final_code,
                 "error": f"Final validation failed: {error_msg}",
-                "plan": plan
+                "plan": plan,
+                "partial": True
             }
 
 
@@ -693,22 +492,25 @@ def main():
 Build a Selenium web scraper that reads URLs from an Excel file and extracts PDF filenames.Given a target URL which is in urls.xlsx in same directory like "https://services.seattle.gov/portal/customize/LinkToRecord.aspx?altId=3003279-EX",
  navigate to the URL,  
 Use Selenium with Chrome in headless mode.
-- Import necessary modules: from selenium and  Use WebDriverWait for waiting on elements.
+- Import necessary modules: from selenium and  IMPORTANT: Use WebDriverWait for waiting on elements.
 generate a single script at last , no modules.
 REQUIREMENTS:
-1. Read each URL from 'urls.xlsx' file IMPORTANT: the urls.xlsx file is in same directory from where we are running the code. (read from first column, there are no headers)
-2. For each URLafter opening url:
-   - Click 'Attachments' tab and wait for 3 secs for page loading
-   - Find all PDF files in span elements
-   - Extract and print PDF filenames by iniialize an empty list and populate it while searching.
+1. Read each URL one by one from 'urls.xlsx' file IMPORTANT: the urls.xlsx file is in same directory from where we are running the code. (read from first column, there are no headers)
+2. For each URLafter opening url one by one:
+   - Click 'Attachments' tab and wait for 5 secs for page loading.(for finding attachments tab use this structure  (By.LINK_TEXT, "Attachments") )
+   - wait for iframe to be present. after switching to iframe, use this approach-
+   - Wait up to 10 seconds for spans using XPath:
+   "//span[contains(translate(text(),'PDF','pdf'), '.pdf')]"
+   - For each element found, extract text and check if it contains '.pdf'
+   (case-insensitive). If yes, add to PDF list.by iniialize an empty list and populate it while searching.
 3. Check only up to 2 iframes if no PDFs found.
-4.extract their filenames (text containing ".pdf"), and print the list of PDF filenames to the console. Do not download any files—only print the names.
+4. Do not download any files—only print the names.
 5. Print summary at the end clearly by mentioning each url and its pdf file names 
-Add print statements for key steps, like "Navigated to URL", "Clicked Attachments", "Searching for PDFs".
+Add print statements for key steps, similar to like "Navigated to URL", "Clicked Attachments", "Searching for PDFs".
 If no PDFs are found, print "No PDF elements found".
 
 
-Use proper error handling and WebDriverWait instead of time.sleep().
+Use proper error handling and strictly use WebDriverWait instead of time.sleep().
 """
 
     # Generate the code
@@ -719,13 +521,15 @@ Use proper error handling and WebDriverWait instead of time.sleep().
     if result["success"]:
         with open("generated_script_gemai.py", "w") as f:
             f.write(result["code"])
-        print("\n✓ Code generated successfully!")
+        print("\n Code generated successfully!")
         print("Saved to: generated_script_gemai.py")
         print("-" * 50)
         print(result["code"])
     else:
-        print(f"\n✗ Code generation failed: {result['error']}")
-        if result.get("code") or result.get("partial"):
+        print(f"\n Code generation failed: {result['error']}")
+        code_content = result.get("code", "").strip()
+        has_meaningful_code = len(code_content) > 10
+        if has_meaningful_code or result.get("partial"):
             print("\nPartial code generated:")
             print("-" * 50)
 
