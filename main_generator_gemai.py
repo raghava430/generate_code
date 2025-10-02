@@ -20,11 +20,13 @@ class CodeGenerationAgent:
         genai.configure(api_key=api_key)
         self.client = genai.GenerativeModel(model)
         self.model = model
-        self.max_retries = 5
+        self.max_retries = 15
 
     def create_planning_prompt(self, user_requirement: str) -> str:
         """Create a prompt for the planner to analyze requirements and create a step-by-step plan."""
         return f"""You are a Python code planning expert. Analyze the following requirement and create a detailed step-by-step plan for implementation.
+        take each user requirement seriously and give plan accordingly, don't assume on your own . give exact plan and description in detail as user requirement states.
+        IMPORTANT: Give plan into simpler steps, so that implementation and debugging part would be easy. Try to break the plan into reasonable simpler steps.
 
 USER REQUIREMENT:
 {user_requirement}
@@ -36,6 +38,13 @@ Please provide a structured plan with the following format:
    - What needs to be done
    - Expected input/output
    - Any error handling needed
+
+   CRITICAL IMPORT FORMAT:
+In your JSON "imports" array, use proper Python syntax:
+ CORRECT: "from selenium import webdriver"
+ CORRECT: "import openpyxl"
+ WRONG: "selenium.webdriver"
+ WRONG: "selenium.webdriver.support import X"
 
 Output your plan in this JSON format:
 {{
@@ -64,15 +73,6 @@ Description: {plan_step.get('description')}
 Purpose: {plan_step.get('code_purpose')}
 Error Handling: {plan_step.get('error_handling', 'Standard error handling')}
 
-{"PREVIOUS CODE CONTEXT:" + previous_code if previous_code else ""}
-
-
-OUTPUT Rules:
-- write only executable python code 
-- NO markdown, NO ```, NO explanations  
-- Start with complete import statements
-- Double-check syntax
-
 IMPORT STATEMENT RULES (MANDATORY):
 Every import MUST use one of these EXACT formats:
 
@@ -87,6 +87,17 @@ Every import MUST use one of these EXACT formats:
   pandas
   selenium.webdriver.support import expected_conditions as EC
 
+{"PREVIOUS CODE CONTEXT:" + previous_code if previous_code else ""}
+
+
+OUTPUT Rules:
+- write only executable python code 
+- NO markdown, NO ```, NO explanations  
+- Start with complete import statements
+- Double-check syntax
+
+
+
     REQUIREMENTS:
     - Use proper Python import syntax with "import" or "from...import"
     - Include error handling as specified
@@ -98,7 +109,14 @@ CODE:"""
 
     def create_error_fixing_prompt(self, plan_step: Dict, failed_code: str, error_message: str) -> str:
         """Create a prompt to fix code based on error."""
-        return f"""You are a Python debugging and testing expert. The following code failed with an error.
+        return f"""You are a Python debugging and testing expert. Fix the following code which  failed with an error.
+
+            **CRITICAL IMPORT FORMAT RULES:**
+    In your JSON "imports" list, use ONLY these formats:
+    - "import module"
+    - "import module as alias"  
+    - "from module import item"
+    - "from module.submodule import item as alias"
 
 ORIGINAL PLAN STEP:
 {json.dumps(plan_step, indent=2)}
@@ -184,7 +202,7 @@ Generate the test code now."""
         Generate and execute a pytest test for the combined code.
         Returns (success, error_message)
         """
-        print(f"  → Running dry-run test for step {current_plan.get('step_number')}...")
+        print(f" Running dry-run test for step {current_plan.get('step_number')}...")
 
         # Generate test code using LLM
         test_prompt = self.create_test_prompt(all_previous_plans, current_plan, 
@@ -208,11 +226,20 @@ Generate the test code now."""
             test_code = test_code.split("```")[1].split("```")[0]
         test_code = test_code.strip()
 
+        lines = test_code.split("\n")
+        cleaned_lines = []
+        for line in lines:
+        # Skip lines that start with REQUIRED_LIBRARIES: (not in comment/docstring)
+            if line.strip().startswith("REQUIRED_LIBRARIES:") and not line.strip().startswith(("#", '"""', "'''")):
+                continue  # Skip this line
+            cleaned_lines.append(line)
+        test_code = "\n".join(cleaned_lines)
+
 
         tests_dir = "tests"
         if not os.path.exists(tests_dir):
             os.makedirs(tests_dir)
-            print(f"  📁 Created '{tests_dir}' directory")
+            print(f"  Created '{tests_dir}' directory")
     
         # Create descriptive filename
         step_num = current_plan.get('step_number', 'unknown')
@@ -240,7 +267,7 @@ Required Libraries: {", ".join(required_libs)}
         with open(test_filepath, 'w', encoding='utf-8') as f:
             f.write(test_file_content)
     
-        print(f"  💾 Test saved: {test_filepath}")
+        print(f"  Test saved: {test_filepath}")
 
         # Install required libraries
         print(f"   Installing test dependencies: {', '.join(required_libs)}")
@@ -429,7 +456,7 @@ Required Libraries: {", ".join(required_libs)}
                     fixed_lines.append(line)
                     continue
     
-                # Skip actual code (has = or ( or [ but not for imports)
+                # Skip actual code (has =, (, or [ but not for imports)
                 if ("=" in stripped or "(" in stripped or "[" in stripped) and " import " not in stripped:
                     fixed_lines.append(line)
                     continue
@@ -438,24 +465,29 @@ Required Libraries: {", ".join(required_libs)}
                 # → "from selenium.webdriver.support import expected_conditions as EC"
                 if " import " in stripped:
                     fixed_lines.append("from " + stripped)
+                    print(f" Fixed import: {stripped} → from {stripped}")
     
                 # Fix Pattern 2: "pandas as pd" → "import pandas as pd"
                 elif " as " in stripped:
                     fixed_lines.append("import " + stripped)
+                    print(f" Fixed import: {stripped} → import {stripped}")
     
                 # Fix Pattern 3: "selenium.webdriver.chrome.options" → "import selenium.webdriver.chrome.options"
                 elif "." in stripped:
                     fixed_lines.append("import " + stripped)
+                    print(f" Fixed import: {stripped} → import {stripped}")
     
                 # Fix Pattern 4: Just "os" or "openpyxl" → "import os"
                 elif stripped.replace("_", "").replace("-", "").isalnum():
                     fixed_lines.append("import " + stripped)
+                    print(f" Fixed import: {stripped} → import {stripped}")
     
                 else:
                 # Keep line unchanged if it doesn't match any pattern
                     fixed_lines.append(line)
 
             code = "\n".join(fixed_lines)
+            
 
             # Step 1: Validate syntax
             is_valid, error_msg = self.validate_code(code, imports)
@@ -475,7 +507,7 @@ Required Libraries: {", ".join(required_libs)}
                 continue
 
             # Step 2: Dry-run test (after successful validation)
-            print(f"  ✓ Syntax validation passed")
+            print(f"   Syntax validation passed")
             test_passed, test_error = self.dryrun_test(
                 all_previous_plans, 
                 current_step, 
@@ -664,7 +696,7 @@ Use Selenium with Chrome in headless mode.
 - Import necessary modules: from selenium and  Use WebDriverWait for waiting on elements.
 generate a single script at last , no modules.
 REQUIREMENTS:
-1. Read each URL from 'urls.xlsx' file which is in same directory (first column, no headers)
+1. Read each URL from 'urls.xlsx' file IMPORTANT: the urls.xlsx file is in same directory from where we are running the code. (read from first column, there are no headers)
 2. For each URLafter opening url:
    - Click 'Attachments' tab and wait for 3 secs for page loading
    - Find all PDF files in span elements
@@ -693,12 +725,21 @@ Use proper error handling and WebDriverWait instead of time.sleep().
         print(result["code"])
     else:
         print(f"\n✗ Code generation failed: {result['error']}")
-        if result.get("code"):
+        if result.get("code") or result.get("partial"):
             print("\nPartial code generated:")
             print("-" * 50)
-            print(result["code"])
+
+            plan_imports = result.get("plan", {}).get("imports", [])
+            partial_code = result.get("code", "")
+            # Combine imports and code
+            if plan_imports:
+                partial_output = "\n".join(plan_imports) + "\n\n" + partial_code
+            else:
+                partial_output = partial_code
+    
+            print(partial_output)
             with open("generated_script_gemai_partial.py", "w") as f:
-                f.write(result["code"])
+                f.write(partial_output)
             print("\nPartial code saved to: generated_script_gemai_partial.py")
 
 
