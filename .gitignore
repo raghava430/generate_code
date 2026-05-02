@@ -1,0 +1,12 @@
+﻿.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+generated/
+generated_script*.py
+failed_script.py
+urls.xlsx
+Langgraph/
