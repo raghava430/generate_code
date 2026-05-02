@@ -1,21 +1,25 @@
 # Agentic Code Generator with Gemini and LangGraph
 
-An agentic Python code-generation framework that uses Google Gemini and LangGraph to generate Python automation scripts from natural-language requirements.
+An agentic Python code-generation framework that uses **Google Gemini** and **LangGraph** to generate Python automation scripts from natural-language requirements.
 
-This project is designed around a practical scraping workflow: it can generate code for reading website URLs from an Excel file, visiting those websites, scraping attachment sections, identifying PDF files, and producing/downloading PDF-related outputs depending on the user requirement.
+This project is designed around a practical scraping workflow: it can generate code that reads website URLs from an Excel file, visits those websites, scrapes attachment/document sections, identifies PDF files, and produces or downloads PDF-related outputs based on the user requirement.
 
-The agent follows a plan-generate-validate-fix workflow:
+## Architecture
 
-- Creates an implementation plan from a user requirement
+![Agentic Code Generator Architecture](docs/architecture.png)
+
+The agent follows a **plan → generate → validate → fix** workflow:
+
+- Creates a structured implementation plan from a user requirement
 - Generates Python code step by step
-- Validates generated code for syntax errors
-- Retries and fixes failed steps
-- Saves the final generated script or partial output when errors occur
+- Validates generated code using Python compilation checks
+- Retries and repairs failed code using error feedback
+- Saves the final generated script, partial output, or failed script for debugging
 
 ## Features
 
-- Gemini-powered planning and code generation
-- LangGraph workflow orchestration
+- Gemini-powered planning, code generation, and repair
+- LangGraph workflow orchestration using agent nodes
 - Step-by-step Python code generation
 - Syntax validation using Python compilation
 - Retry and repair loop for failed code
@@ -33,7 +37,7 @@ The generated script can be customized to:
 - Open each website URL in a browser automation session
 - Navigate to attachment or document sections
 - Search for PDF files on the page or inside iframes
-- Extract PDF filenames or links
+- Extract PDF filenames or PDF links
 - Download PDFs when the requirement asks for downloading
 - Print a clear summary of processed URLs and discovered PDF files
 
@@ -45,6 +49,8 @@ The generated script can be customized to:
 ├── requirements.txt
 ├── .env.example
 ├── .gitignore
+├── docs/
+│   └── architecture.png
 └── README.md
 ```
 
@@ -100,6 +106,18 @@ To customize the generated scraper/downloader, update the `user_requirement` var
 ```text
 Build a Selenium scraper that reads URLs from urls.xlsx, opens each URL, finds PDF attachments, downloads the PDF files, and prints a summary for each website.
 ```
+
+## Generated Outputs
+
+Depending on validation results, the workflow may create files such as:
+
+```text
+generated_script_gemai.py
+generated_script_gemai_partial.py
+failed_script.py
+```
+
+These files are generated artifacts and should not be committed unless intentionally needed for documentation or examples.
 
 ## Tech Stack
 
